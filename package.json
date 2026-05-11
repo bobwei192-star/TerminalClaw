@@ -1,0 +1,30 @@
+{
+  "name": "terminalclaw",
+  "version": "0.1.0",
+  "description": "TerminalClaw - 终端日志 AI 分析工作流 (Tmux + OpenClaw + Ollama)",
+  "license": "MIT",
+  "bin": {
+    "tclaw": "./bin/tclaw"
+  },
+  "scripts": {
+    "dev:ai": "bash scripts/terminalclaw.sh start",
+    "dev:monitor": "bash scripts/terminalclaw.sh monitor",
+    "dev:analyze": "bash scripts/terminalclaw.sh analyze"
+  },
+  "files": [
+    "bin/",
+    "scripts/",
+    "config/",
+    "terminalclaw/",
+    "setup.py",
+    "requirements.txt"
+  ],
+  "keywords": [
+    "terminal",
+    "ai",
+    "log-analysis",
+    "openclaw",
+    "ollama",
+    "tmux"
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  "providers": {
+    "ollama": {
+      "baseUrl": "http://127.0.0.1:11434/v1",
+      "model": "terminalclaw",
+      "contextTokens": 8192,
+      "contextWindow": 65536
+    }
+  },
+  "model": {
+    "primary": "ollama/terminalclaw",
+    "fallback": "ollama/qwen3.5"
+  },
+  "tools": {
+    "exec": {
+      "enabled": true,
+      "sandbox": true,
+      "allowedCommands": [
+        "cat /tmp/tclaw/*.log",
+        "tail -n * /tmp/tclaw/*.log",
+        "grep -i error /tmp/tclaw/*.log",
+        "jq *",
+        "awk *",
+        "sed *"
+      ]
+    }
+  },
+  "memory": {
+    "enabled": true,
+    "storage": "local"
+  },
+  "telemetry": {
+    "enabled": false
+  }
+}
