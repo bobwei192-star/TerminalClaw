@@ -2,13 +2,18 @@
   "providers": {
     "ollama": {
       "baseUrl": "http://127.0.0.1:11434/v1",
-      "model": "terminalclaw",
+      "model": "qwen3.5",
       "contextTokens": 8192,
       "contextWindow": 65536
+    },
+    "deepseek": {
+      "baseUrl": "https://api.deepseek.com/v1",
+      "model": "deepseek-chat",
+      "apiKey": "env:DEEPSEEK_API_KEY"
     }
   },
   "model": {
-    "primary": "ollama/terminalclaw",
+    "primary": "ollama/qwen3.5",
     "fallback": "ollama/qwen3.5"
   },
   "tools": {

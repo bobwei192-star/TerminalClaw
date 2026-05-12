@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """
 TerminalClaw CLI — 统一命令行入口 (Click 框架)
+
+支持两种 LLM 模式:
+  local (默认) — 本地 Ollama + qwen3.5
+  cloud        — 云端 DeepSeek API（或其他 OpenAI 兼容 API）
 """
 
 import os
@@ -10,14 +14,21 @@ import time
 import click
 
 from terminalclaw.config import (
+    TCLAW_LLM_MODE,
     LOG_FILE,
     LOG_DIR,
     SESSION_NAME,
     MONITOR_INTERVAL_SECONDS,
     ANALYZE_DEFAULT_LINES,
-    OLLAMA_MODEL,
+    OLLAMA_LOCAL_MODEL,
+    DEEPSEEK_API_KEY,
+    DEEPSEEK_MODEL,
 )
-from terminalclaw.env_check import run_checks, pull_model
+from terminalclaw.env_check import (
+    run_checks,
+    is_cloud_mode,
+    is_local_mode,
+)
 from terminalclaw.log_manager import (
     setup_log_dir,
     get_log_summary,
@@ -59,13 +70,22 @@ def _error(msg: str):
     click.echo(f"{ANSI_RED}[ERROR]{ANSI_NC} {msg}", err=True)
 
 
+def _get_model_name() -> str:
+    if is_cloud_mode():
+        return DEEPSEEK_MODEL
+    return OLLAMA_LOCAL_MODEL
+
+
 @click.group()
 @click.version_option(version="0.1.0", prog_name="tclaw")
 def cli():
     """
     TerminalClaw — 终端日志 AI 分析工作流
 
-    Tmux + OpenClaw + Ollama 全本地方案
+    Tmux + OpenClaw + LLM 全本地方案
+
+    模式切换: TCLAW_LLM_MODE=local (默认, 本地 Ollama)
+              TCLAW_LLM_MODE=cloud (云端 DeepSeek API)
     """
     pass
 
@@ -74,9 +94,10 @@ def cli():
 @click.argument("log_command", required=True)
 def start(log_command):
     """启动双面板工作区（左日志 / 右 AI）"""
-    _info("TerminalClaw 环境自检 ...")
+    mode_label = "云端 DeepSeek" if is_cloud_mode() else "本地 Ollama"
+    _info(f"TerminalClaw 环境自检 (LLM: {mode_label}) ...")
 
-    checks = run_checks(OLLAMA_MODEL)
+    checks = run_checks()
 
     if checks["missing_deps"]:
         _error(f"缺少依赖: {', '.join(checks['missing_deps'])}")
@@ -84,17 +105,22 @@ def start(log_command):
             click.echo(f"  {dep}: {hint}")
         sys.exit(1)
 
-    if not checks["ollama_running"]:
-        _error("Ollama 服务未运行，请执行: ollama serve")
-        sys.exit(1)
-
-    if not checks["ollama_model_ready"]:
-        _warn(f"模型 {OLLAMA_MODEL} 未找到，尝试拉取 ...")
-        pulled = pull_model("qwen3.5")
-        if not pulled:
-            _error("无法拉取后备模型 qwen3.5")
+    if is_local_mode():
+        if not checks.get("ollama_running"):
+            _error("Ollama 服务未运行，请执行: ollama serve")
             sys.exit(1)
-        _info("已拉取 qwen3.5 作为后备模型")
+        if not checks.get("ollama_model_ready"):
+            _warn(f"模型 {OLLAMA_LOCAL_MODEL} 未找到，请执行: ollama pull {OLLAMA_LOCAL_MODEL}")
+            sys.exit(1)
+    else:
+        if not checks.get("cloud_api_key_configured"):
+            _error("DEEPSEEK_API_KEY 环境变量未设置")
+            click.echo("  export DEEPSEEK_API_KEY=sk-xxxxxxxx")
+            sys.exit(1)
+        if not checks.get("cloud_api_ok"):
+            _warn("DeepSeek API 连接失败，请检查 API Key 和网络")
+            sys.exit(1)
+        _info(f"DeepSeek API 连接正常 (模型: {DEEPSEEK_MODEL})")
 
     _info("环境检查通过")
 
@@ -166,7 +192,7 @@ def analyze(lines):
 
     entry = format_entry(
         command="analyze",
-        model=OLLAMA_MODEL,
+        model=_get_model_name(),
         tokens=0,
         analysis=f"读取最近 {lines} 行日志",
         error_count=summary["error_count"],
@@ -176,6 +202,14 @@ def analyze(lines):
     append_entry(store, entry)
 
     _info("分析记录已保存")
+
+
+@cli.command()
+def live():
+    """右面板实时监控 — Attach 模式"""
+    from terminalclaw.live_monitor import main
+    _info("启动 Live Monitor (Attach 模式) ...")
+    main()
 
 
 @cli.command()
@@ -200,7 +234,7 @@ def monitor():
 
                 entry = format_entry(
                     command="monitor",
-                    model=OLLAMA_MODEL,
+                    model=_get_model_name(),
                     tokens=0,
                     analysis=f"自动检测到 {err_count} 个错误",
                     error_count=err_count,
@@ -240,52 +274,84 @@ def status():
 
     click.echo()
     checks = run_checks()
-    if checks["ollama_running"]:
-        click.echo(f"Ollama: {ANSI_GREEN}运行中{ANSI_NC}")
-        model_status = (
-            f"{ANSI_GREEN}就绪{ANSI_NC}"
-            if checks["ollama_model_ready"]
-            else f"{ANSI_YELLOW}未找到{ANSI_NC}"
-        )
-        click.echo(f"  模型: {model_status}")
+
+    if checks["mode"] == "local":
+        if checks.get("ollama_running"):
+            click.echo(f"LLM: {ANSI_GREEN}Ollama 运行中{ANSI_NC}")
+            model_status = (
+                f"{ANSI_GREEN}就绪{ANSI_NC}"
+                if checks.get("ollama_model_ready")
+                else f"{ANSI_YELLOW}未找到{ANSI_NC}"
+            )
+            click.echo(f"  模型: {model_status} ({checks.get('ollama_model', '')})")
+        else:
+            click.echo(f"LLM: {ANSI_RED}Ollama 未运行{ANSI_NC}")
     else:
-        click.echo(f"Ollama: {ANSI_RED}未运行{ANSI_NC}")
+        if checks.get("cloud_api_ok"):
+            click.echo(f"LLM: {ANSI_GREEN}DeepSeek 连接正常{ANSI_NC}")
+        elif checks.get("cloud_api_key_configured"):
+            click.echo(f"LLM: {ANSI_YELLOW}DeepSeek API Key 已设置，但连接失败{ANSI_NC}")
+        else:
+            click.echo(f"LLM: {ANSI_RED}DeepSeek API Key 未设置{ANSI_NC}")
+        click.echo(f"  模型: {checks.get('cloud_model', DEEPSEEK_MODEL)}")
 
 
 @cli.command()
 @click.option("--openclaw", is_flag=True, help="部署 OpenClaw 配置模板")
 @click.option("--tmux", is_flag=True, help="部署 Tmux 配置")
-@click.option("--modelfile", is_flag=True, help="创建 Ollama 专用模型")
+@click.option("--mode", default=None,
+              type=click.Choice(["local", "cloud"]),
+              help="LLM 模式 (local=Ollama, cloud=DeepSeek)")
 @click.option("--all", "deploy_all", is_flag=True, help="部署全部配置（默认）")
-def setup(openclaw, tmux, modelfile, deploy_all):
+def setup(openclaw, tmux, mode, deploy_all):
     """一键部署配置文件到对应位置"""
 
-    if not any([openclaw, tmux, modelfile, deploy_all]):
+    if not any([openclaw, tmux, deploy_all]):
         deploy_all = True
 
     import shutil
-    import subprocess
+    import json
 
+    active_mode = mode or TCLAW_LLM_MODE
     package_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     config_dir = os.path.join(package_dir, "config")
 
     openclaw_dest = os.path.expanduser("~/.openclaw/openclaw.json")
     tmux_dest = os.path.expanduser("~/.tmux.conf")
-    modelfile_src = os.path.join(config_dir, "Modelfile.terminalclaw")
 
     if deploy_all or openclaw:
-        src = os.path.join(config_dir, "openclaw.template.json")
-        if os.path.exists(src):
-            if os.path.exists(openclaw_dest):
-                _warn(f"~/.openclaw/openclaw.json 已存在，跳过（请手动合并）")
-                click.echo(f"  模板文件: {src}")
-                click.echo(f"  目标文件: {openclaw_dest}")
-            else:
-                os.makedirs(os.path.dirname(openclaw_dest), exist_ok=True)
-                shutil.copy(src, openclaw_dest)
-                _info(f"已部署: {openclaw_dest}")
-                _warn("模板中 model 字段为 'terminalclaw'，"
-                      "如未创建专用模型请改为 'qwen3.5'")
+        if active_mode == "cloud":
+            model_primary = "deepseek/deepseek-chat"
+        else:
+            model_primary = "ollama/qwen3.5"
+
+        _info(f"LLM 模式: {active_mode} → {model_primary}")
+        click.echo()
+        _info("为避免与 OpenClaw 原生配置冲突，TerminalClaw 不直接写入 ~/.openclaw/openclaw.json。")
+        click.echo()
+        click.echo("  请手动执行以下步骤:")
+        click.echo()
+        if active_mode == "cloud":
+            click.echo(f"  1. 设置 DeepSeek API Key (环境变量):")
+            click.echo(f"     export DEEPSEEK_API_KEY=sk-xxxxxxxx")
+            click.echo()
+            click.echo(f"  2. 配置 OpenClaw 使用 DeepSeek:")
+            click.echo(f"     openclaw config set model primary {model_primary}")
+            click.echo(f"     openclaw config set model fallback {model_primary}")
+            click.echo()
+            click.echo(f"  3. 添加 DeepSeek Provider (手动写入 ~/.openclaw/openclaw.json)")
+            click.echo(f'     在 "providers" 中添加:')
+            click.echo(f'     "deepseek": {{"baseUrl": "https://api.deepseek.com/v1", "model": "deepseek-chat", "apiKey": "env:DEEPSEEK_API_KEY"}}')
+        else:
+            click.echo(f"  1. 启动 Ollama:")
+            click.echo(f"     ollama serve &")
+            click.echo(f"     ollama pull qwen3.5")
+            click.echo()
+            click.echo(f"  2. 配置 OpenClaw 使用 Ollama:")
+            click.echo(f"     openclaw config set model primary {model_primary}")
+            click.echo(f"     openclaw config set model fallback {model_primary}")
+        click.echo()
+        click.echo(f"  参考模板: {os.path.join(config_dir, 'openclaw.template.json')}")
 
     if deploy_all or tmux:
         src = os.path.join(config_dir, "tmux.conf")
@@ -296,23 +362,16 @@ def setup(openclaw, tmux, modelfile, deploy_all):
                 shutil.copy(src, tmux_dest)
                 _info(f"已部署: {tmux_dest}")
 
-    if deploy_all or modelfile:
-        if os.path.exists(modelfile_src):
-            _info("正在创建 Ollama 专用模型 terminalclaw ...")
-            try:
-                subprocess.run(
-                    ["ollama", "create", "terminalclaw", "-f", modelfile_src],
-                    check=True,
-                    timeout=300,
-                )
-                _info("专用模型 terminalclaw 创建成功")
-            except FileNotFoundError:
-                _error("ollama 命令未找到，请先安装 Ollama")
-            except subprocess.CalledProcessError:
-                _error("模型创建失败，请手动执行: ollama create terminalclaw -f "
-                       + modelfile_src)
-            except subprocess.TimeoutExpired:
-                _error("模型创建超时（>5 分钟），请检查 Ollama 服务状态")
-
     click.echo()
-    _info("配置部署完成。运行 'tclaw status' 确认环境状态。")
+
+    if active_mode == "cloud":
+        _info("云模式部署完成。下一步:")
+        click.echo("  export DEEPSEEK_API_KEY=sk-xxxxxxxx")
+        click.echo("  tclaw status")
+        click.echo("  tclaw start 'npm run dev'")
+    else:
+        _info("本地模式部署完成。下一步:")
+        click.echo("  ollama serve &")
+        click.echo("  ollama pull qwen3.5")
+        click.echo("  tclaw status")
+        click.echo("  tclaw start 'npm run dev'")

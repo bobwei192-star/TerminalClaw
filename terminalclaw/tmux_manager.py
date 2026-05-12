@@ -1,3 +1,4 @@
+import os
 import subprocess
 import time
 from typing import Dict, List, Optional
@@ -69,8 +70,7 @@ def split_pane(session: str, direction: str = "h") -> Optional[str]:
 def send_keys(session: str, pane: str, keys: str, enter: bool = True) -> bool:
     args = ["send-keys", "-t", f"{session}:{pane}"]
     if enter:
-        args.extend(["-l", keys])
-        result = _run_tmux(args)
+        result = _run_tmux(args + [keys, "C-m"])
     else:
         result = _run_tmux(args + [keys])
     return result.returncode == 0
@@ -88,8 +88,7 @@ def attach_session(name: str = "") -> bool:
     if not session_exists(session):
         return False
 
-    result = _run_tmux(["attach-session", "-t", session], timeout=0)
-    return True
+    os.execvp("tmux", ["tmux", "attach-session", "-t", session])
 
 
 def list_panes(session: str = "") -> List[Dict]:
@@ -164,22 +163,4 @@ def init_log_pane(session: str, pane: str, log_command: str) -> None:
 
 
 def init_ai_pane(session: str, pane: str) -> None:
-    banner = [
-        f"echo '=== TerminalClaw AI 分析面板 ==='",
-        f"echo ''",
-        f"echo '可用指令:'",
-        f"echo '  分析最近50行日志'",
-        f"echo '  检查有没有错误'",
-        f"echo '  分析输出中的异常模式'",
-        f"echo ''",
-    ]
-    for cmd in banner:
-        send_keys(session, pane, cmd)
-
-    prompt = (
-        f"openclaw agent --local --agent terminalclaw "
-        f"-m '你是日志分析专家，日志文件在 {LOG_FILE}。"
-        f"用户会用自然语言发出分析指令，你要优先用 read 工具读取日志文件，"
-        f"必要时使用 exec grep/awk 进行复杂文本处理。'"
-    )
-    send_keys(session, pane, prompt)
+    send_keys(session, pane, "tclaw live")

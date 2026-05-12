@@ -12,8 +12,11 @@ from terminalclaw.env_check import (
     check_tee,
     check_ollama_service,
     check_ollama_model,
+    check_cloud_api,
     get_missing_dependencies,
     run_checks,
+    is_cloud_mode,
+    is_local_mode,
 )
 
 
@@ -78,73 +81,111 @@ class TestOllamaServiceCheck:
 class TestOllamaModelCheck:
     def test_model_found(self):
         result = MagicMock()
-        result.stdout = "terminalclaw:latest\nqwen3.5:latest\n"
+        result.stdout = "qwen3.5:latest\nterminalclaw:latest\n"
         with patch("subprocess.run", return_value=result):
-            assert check_ollama_model("terminalclaw") is True
+            assert check_ollama_model("qwen3.5") is True
 
     def test_model_not_found(self):
         result = MagicMock()
-        result.stdout = "qwen3.5:latest\nllama3:latest\n"
+        result.stdout = "llama3:latest\n"
         with patch("subprocess.run", return_value=result):
-            assert check_ollama_model("terminalclaw") is False
+            assert check_ollama_model("qwen3.5") is False
 
     def test_ollama_not_installed(self):
         with patch("subprocess.run", side_effect=FileNotFoundError):
-            assert check_ollama_model("terminalclaw") is False
+            assert check_ollama_model("qwen3.5") is False
+
+
+class TestCloudApiCheck:
+    def test_api_ok(self):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        with patch("terminalclaw.env_check.DEEPSEEK_API_KEY", "sk-test"), \
+             patch("requests.post", return_value=mock_resp):
+            assert check_cloud_api() is True
+
+    def test_api_no_key(self):
+        with patch("terminalclaw.env_check.DEEPSEEK_API_KEY", ""):
+            assert check_cloud_api() is False
+
+    def test_api_connection_error(self):
+        import requests
+        with patch("terminalclaw.env_check.DEEPSEEK_API_KEY", "sk-test"), \
+             patch("requests.post", side_effect=requests.ConnectionError):
+            assert check_cloud_api() is False
 
 
 class TestMissingDependencies:
-    def test_all_present(self):
-        with patch("shutil.which", return_value="/usr/bin/mock"):
+    def test_all_present_local_mode(self):
+        with patch("terminalclaw.env_check.is_local_mode", return_value=True), \
+             patch("terminalclaw.env_check.is_cloud_mode", return_value=False), \
+             patch("shutil.which", return_value="/usr/bin/mock"):
             assert get_missing_dependencies() == []
 
-    def test_some_missing(self):
+    def test_ollama_required_in_local_mode(self):
         def mock_which(cmd):
-            return "/usr/bin/tmux" if cmd == "tmux" else None
+            if cmd in ("tmux", "openclaw", "tee"):
+                return "/usr/bin/mock"
+            return None
 
-        with patch("shutil.which", side_effect=mock_which):
+        with patch("terminalclaw.env_check.is_local_mode", return_value=True), \
+             patch("terminalclaw.env_check.is_cloud_mode", return_value=False), \
+             patch("shutil.which", side_effect=mock_which):
             missing = get_missing_dependencies()
-            assert "tmux" not in missing
-            assert "openclaw" in missing
             assert "ollama" in missing
-            assert "tee" in missing
+            assert "tmux" not in missing
 
-    def test_all_missing(self):
-        with patch("shutil.which", return_value=None):
+    def test_ollama_not_required_in_cloud_mode(self):
+        def mock_which(cmd):
+            if cmd in ("tmux", "openclaw", "tee"):
+                return "/usr/bin/mock"
+            return None
+
+        with patch("terminalclaw.env_check.is_local_mode", return_value=False), \
+             patch("terminalclaw.env_check.is_cloud_mode", return_value=True), \
+             patch("shutil.which", side_effect=mock_which):
             missing = get_missing_dependencies()
-            assert len(missing) == 4
+            assert "ollama" not in missing
 
 
 class TestRunChecks:
-    def test_all_good(self):
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        model_result = MagicMock()
-        model_result.stdout = "terminalclaw:latest\n"
-
-        with patch("shutil.which", return_value="/usr/bin/mock"), \
-             patch("requests.get", return_value=mock_resp), \
-             patch("subprocess.run", return_value=model_result):
-            result = run_checks("terminalclaw")
-            assert result["all_deps_present"] is True
-            assert result["ollama_running"] is True
-            assert result["ollama_model_ready"] is True
-
-    def test_ollama_down(self):
-        import requests
-        with patch("shutil.which", return_value="/usr/bin/mock"), \
-             patch("requests.get", side_effect=requests.ConnectionError):
-            result = run_checks()
-            assert result["ollama_running"] is False
-
-    def test_model_missing(self):
+    def test_local_mode_all_good(self):
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         model_result = MagicMock()
         model_result.stdout = "qwen3.5:latest\n"
 
-        with patch("shutil.which", return_value="/usr/bin/mock"), \
+        with patch("terminalclaw.env_check.is_local_mode", return_value=True), \
+             patch("terminalclaw.env_check.is_cloud_mode", return_value=False), \
+             patch("shutil.which", return_value="/usr/bin/mock"), \
              patch("requests.get", return_value=mock_resp), \
              patch("subprocess.run", return_value=model_result):
-            result = run_checks("terminalclaw")
-            assert result["ollama_model_ready"] is False
+            result = run_checks()
+            assert result["mode"] == "local"
+            assert result["all_deps_present"] is True
+            assert result["ollama_running"] is True
+            assert result["ollama_model_ready"] is True
+
+    def test_cloud_mode_all_good(self):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+
+        with patch("terminalclaw.env_check.is_local_mode", return_value=False), \
+             patch("terminalclaw.env_check.is_cloud_mode", return_value=True), \
+             patch("terminalclaw.env_check.DEEPSEEK_API_KEY", "sk-test"), \
+             patch("shutil.which", return_value="/usr/bin/mock"), \
+             patch("requests.post", return_value=mock_resp):
+            result = run_checks()
+            assert result["mode"] == "cloud"
+            assert result["all_deps_present"] is True
+            assert result["cloud_api_ok"] is True
+
+    def test_cloud_mode_missing_key(self):
+        with patch("terminalclaw.env_check.is_local_mode", return_value=False), \
+             patch("terminalclaw.env_check.is_cloud_mode", return_value=True), \
+             patch("terminalclaw.env_check.DEEPSEEK_API_KEY", ""), \
+             patch("shutil.which", return_value="/usr/bin/mock"):
+            result = run_checks()
+            assert result["mode"] == "cloud"
+            assert result["cloud_api_key_configured"] is False
+            assert result["cloud_api_ok"] is False
